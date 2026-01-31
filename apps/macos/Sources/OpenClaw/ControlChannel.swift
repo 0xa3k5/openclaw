@@ -362,6 +362,8 @@ final class ControlChannel {
             {
                 NotificationCenter.default.post(name: .controlHeartbeat, object: data)
             }
+        case let .event(evt) where evt.event == "chat":
+            self.routeChatEvent(evt)
         case let .event(evt) where evt.event == "shutdown":
             self.state = .degraded("gateway shutdown")
         case .snapshot:
@@ -369,6 +371,48 @@ final class ControlChannel {
         default:
             break
         }
+    }
+
+    private struct ChatEventPayload: Codable {
+        let state: String?
+        let sessionKey: String?
+        let message: ChatMessage?
+
+        struct ChatMessage: Codable {
+            let role: String?
+            let content: [ContentBlock]?
+        }
+
+        struct ContentBlock: Codable {
+            let type: String?
+            let text: String?
+        }
+    }
+
+    private func routeChatEvent(_ evt: EventFrame) {
+        guard let payload = evt.payload,
+              let chat = try? GatewayPayloadDecoding.decode(payload, as: ChatEventPayload.self)
+        else { return }
+        guard chat.state == "final" else { return }
+
+        // Extract preview text from the assistant's message.
+        var preview: String?
+        if let message = chat.message,
+           message.role == "assistant",
+           let content = message.content,
+           let first = content.first(where: { $0.type == "text" }),
+           let text = first.text
+        {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Skip empty/silent replies.
+            if !trimmed.isEmpty, trimmed != "NO_REPLY", trimmed != "HEARTBEAT_OK" {
+                preview = trimmed
+            }
+        }
+
+        // Only nudge when there's actual content and the chat panel is hidden.
+        guard let preview, !WebChatManager.shared.isPanelVisible else { return }
+        NudgeStore.shared.push(preview: preview, sessionKey: chat.sessionKey)
     }
 
     private func routeWorkActivity(from event: ControlAgentEvent) {

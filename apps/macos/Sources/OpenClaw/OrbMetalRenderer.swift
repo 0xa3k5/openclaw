@@ -244,13 +244,19 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         radiusMod += wTalk * sin(t * 4.5) * 0.035;
         radiusMod += wTalk * snoise(float3(angle * 3.0, t * 0.5, 0.0)) * 0.045;
         radiusMod += wListen * sin(t * 1.5) * 0.045;
-        // Notification pulse: quick expansion
-        radiusMod += notif * sin(u.time * 8.0) * 0.04;
+        // Notification: rhythmic pulse + shape wobble
+        radiusMod += notif * sin(u.time * 5.0) * 0.06;
+        radiusMod += notif * sin(u.time * 3.2 + 0.7) * 0.03;
 
         // --- Organic orb shape (two octaves for more life) ---
-        float shapeN = snoise(float3(uv * 1.8, t * 0.06)) * 0.12;
+        // Notification adds extra shape turbulence (the orb gets "excited")
+        float shapeSpeed = 0.06 + notif * 0.15;
+        float shapeAmp = 0.12 + notif * 0.06;
+        float shapeN = snoise(float3(uv * 1.8, t * shapeSpeed)) * shapeAmp;
         shapeN += snoise(float3(uv * 0.7 + 15.0, t * 0.035)) * 0.07;
-        shapeN += snoise(float3(uv * 3.5 + 30.0, t * 0.08)) * 0.04; // fine detail
+        shapeN += snoise(float3(uv * 3.5 + 30.0, t * 0.08)) * 0.04;
+        // Notification: angular distortion makes the shape less round
+        shapeN += notif * snoise(float3(angle * 4.0, t * 0.3, 5.0)) * 0.08;
         float dd = dist + shapeN;
 
         // Breathing: visible in idle, subtle otherwise
@@ -345,12 +351,18 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
                    + c5 * b5 * (1.0 + sin(shift + 2.0) * 0.25)
                    + c6 * b6 * (1.0 + sin(shift + 5.5) * 0.2);
 
+        // Notification: warm golden color shift (overrides, not just tints)
+        float3 nudgeWarm = float3(1.0, 0.65, 0.15);
+        float nudgePulse = 0.5 + 0.5 * sin(u.time * 3.0);
+        col = mix(col, nudgeWarm * (0.8 + nudgePulse * 0.4), notif * 0.7);
+
         // Intensity per state
         float intensity = 1.0;
         intensity = mix(intensity, 0.8, wIdle);
         intensity = mix(intensity, 1.4, wTalk);
         intensity = mix(intensity, 1.2, wThink);
         intensity = mix(intensity, 1.1, wListen);
+        intensity += notif * 0.3; // brighter when nudging
         col *= intensity;
 
         // Shimmer

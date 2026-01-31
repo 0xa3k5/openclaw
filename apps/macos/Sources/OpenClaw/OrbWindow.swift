@@ -205,26 +205,33 @@ final class OrbWindowController {
 private struct OrbHostView: View {
     private let activityStore = WorkActivityStore.shared
     private let dropState = OrbDropState.shared
+    private let nudgeStore = NudgeStore.shared
     @State private var isHovering = false
     @State private var presenceValue: Float = 1.0
+    @State private var notificationValue: Float = 0
     @State private var isScreenAsleep = false
     @State private var presenceTimer: Timer?
+    @State private var nudgeDecayTask: Task<Void, Never>?
     let orbSize: CGFloat
 
     var body: some View {
         MetalOrbView(
-            speed: self.orbSpeed,
+            speed: self.nudgeStore.hasNudge ? max(self.orbSpeed, 0.5) : self.orbSpeed,
             state: self.orbState,
             hoverBoost: self.isHovering ? 1.5 : 1.0,
             dropHighlight: self.dropState.isDragHovering ? 1.0 : 0.0,
-            presence: self.presenceValue,
-            notification: 0  // TODO: wire gateway notification events
+            presence: self.nudgeStore.hasNudge ? 1.0 : self.presenceValue,
+            notification: self.notificationValue
         )
         .frame(width: self.orbSize, height: self.orbSize)
-        .scaleEffect(self.isHovering ? 1.08 : 1.0)
+        .scaleEffect(self.nudgeScale)
         .animation(.easeInOut(duration: 0.3), value: self.isHovering)
+        .animation(.spring(response: 0.5, dampingFraction: 0.6), value: self.nudgeBounce)
         .contentShape(Circle())
         .onTapGesture {
+            self.nudgeStore.acknowledge()
+            self.notificationValue = 0
+            self.nudgeBounce = false
             self.toggleChat()
         }
         .onHover { hovering in
@@ -236,6 +243,41 @@ private struct OrbHostView: View {
         }
         .onDisappear {
             self.presenceTimer?.invalidate()
+            self.nudgeDecayTask?.cancel()
+        }
+        .onChange(of: self.nudgeStore.hasNudge) { _, hasNudge in
+            if hasNudge {
+                self.notificationValue = 1.0
+                // Bounce: quick scale pop to grab attention
+                self.nudgeBounce = true
+                // Settle the notification intensity but keep it visible
+                self.nudgeDecayTask?.cancel()
+                self.nudgeDecayTask = Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    await MainActor.run {
+                        withAnimation(.easeOut(duration: 2.0)) {
+                            self.notificationValue = 0.4
+                        }
+                    }
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.notificationValue = 0
+                }
+                self.nudgeBounce = false
+            }
+        }
+    }
+
+    @State private var nudgeBounce = false
+
+    private var nudgeScale: CGFloat {
+        if self.nudgeBounce {
+            return 1.12
+        } else if self.isHovering {
+            return 1.08
+        } else {
+            return 1.0
         }
     }
 
@@ -337,3 +379,5 @@ private struct OrbHostView: View {
         }
     }
 }
+
+

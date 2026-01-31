@@ -138,6 +138,9 @@ struct OpenClawApp: App {
             self.isPanelVisible = visible
             self.updateStatusHighlight()
             self.updateHoverHUDSuppression()
+            if visible {
+                NudgeStore.shared.acknowledge()
+            }
         }
         CanvasManager.shared.onPanelVisibilityChanged = { [self] visible in
             self.state.canvasPanelVisible = visible
@@ -282,6 +285,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MacNodeModeCoordinator.shared.start()
         VoiceWakeGlobalSettingsSync.shared.start()
         Task { PresenceReporter.shared.start() }
+        AmbientContext.shared.start()
+        PeriodicScreenCapture.shared.start()
         Task { await HealthStore.shared.refresh(onDemand: true) }
         Task { await PortGuardian.shared.sweep(mode: AppStateStore.shared.connectionMode) }
         Task { await PeekabooBridgeHostCoordinator.shared.setEnabled(AppStateStore.shared.peekabooBridgeEnabled) }
