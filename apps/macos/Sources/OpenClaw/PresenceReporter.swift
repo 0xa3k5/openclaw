@@ -62,6 +62,11 @@ final class PresenceReporter {
         Task { await self.push(reason: reason) }
     }
 
+    /// Seconds since last keyboard/mouse input. Used by the orb for presence dimming.
+    static func idleSeconds() -> Int? {
+        lastInputSeconds()
+    }
+
     private static func composePresenceSummary(mode: String, reason: String) -> String {
         let host = InstanceIdentity.displayName
         let ip = Self.primaryIPv4Address() ?? "ip-unknown"
@@ -87,7 +92,8 @@ final class PresenceReporter {
         return "macos \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
     }
 
-    private static func lastInputSeconds() -> Int? {
+    /// Seconds since last keyboard/mouse input. Used by orb for presence dimming.
+    static func lastInputSeconds() -> Int? {
         let anyEvent = CGEventType(rawValue: UInt32.max) ?? .null
         let seconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
         if seconds.isNaN || seconds.isInfinite || seconds < 0 { return nil }

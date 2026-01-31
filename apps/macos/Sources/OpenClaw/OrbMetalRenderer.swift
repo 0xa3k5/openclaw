@@ -8,6 +8,8 @@ struct OrbUniforms {
     var speed: Float = 1.0
     var state: Float = 0
     var dropHighlight: Float = 0
+    var presence: Float = 1.0
+    var notification: Float = 0
     var resolution: SIMD2<Float> = .zero
 }
 
@@ -18,12 +20,18 @@ struct OrbAnimParams: Sendable {
     var state: Float = 0
     var hoverBoost: Float = 1.0
     var dropHighlight: Float = 0
+    var presence: Float = 1.0
+    var notification: Float = 0
 
     mutating func lerp(toward t: OrbAnimParams, factor f: Float) {
-        speed         += (t.speed - speed) * f
-        state         += (t.state - state) * f
+        // Adaptive lerp: faster for active transitions
+        let activeFactor = t.speed > speed ? min(f * 1.8, 0.2) : f
+        speed         += (t.speed - speed) * activeFactor
+        state         += (t.state - state) * activeFactor
         hoverBoost    += (t.hoverBoost - hoverBoost) * f
         dropHighlight += (t.dropHighlight - dropHighlight) * f
+        presence      += (t.presence - presence) * (f * 0.5)  // slow fade for presence
+        notification  += (t.notification - notification) * (f * 2.0)  // fast for notifications
     }
 }
 
@@ -95,6 +103,8 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         uniforms.speed = currentParams.speed * currentParams.hoverBoost
         uniforms.state = currentParams.state
         uniforms.dropHighlight = currentParams.dropHighlight
+        uniforms.presence = currentParams.presence
+        uniforms.notification = currentParams.notification
         uniforms.resolution = SIMD2<Float>(Float(view.drawableSize.width), Float(view.drawableSize.height))
 
         guard let drawable = view.currentDrawable,
@@ -130,6 +140,8 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float speed;
         float state;
         float dropHighlight;
+        float presence;
+        float notification;
         float2 resolution;
     };
 
@@ -206,52 +218,53 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         return out;
     }
 
-    // ---- Fragment: Aurora Curtain (state-driven) ----
+    // ---- Fragment: Aurora Curtain (state-driven, presence-aware) ----
 
     fragment float4 orbFragment(VertexOut in [[stage_in]],
                                 constant OrbUniforms &u [[buffer(0)]]) {
         float2 uv = in.uv * 2.0 - 1.0;
         float t = u.time * u.speed;
-        float st = u.state; // 0=idle, 1=thinking, 2=talking, 3=listening
+        float st = u.state;
+        float pres = u.presence;
+        float notif = u.notification;
 
         float dist = length(uv);
         float angle = atan2(uv.y, uv.x);
 
-        // State-driven radius modulation
-        float radiusMod = 0.0;
-        // Thinking: strong pulsing warble
-        float thinkW = clamp(st, 0.0, 1.0) * (1.0 - clamp(st - 1.0, 0.0, 1.0));
-        radiusMod += thinkW * sin(t * 2.5) * 0.04;
-        radiusMod += thinkW * sin(t * 3.8 + 1.3) * 0.02;
-        // Talking: energetic fast pulse + shape distortion
-        float talkW = clamp(st - 1.0, 0.0, 1.0) * (1.0 - clamp(st - 2.0, 0.0, 1.0));
-        radiusMod += talkW * sin(t * 4.5) * 0.035;
-        radiusMod += talkW * snoise(float3(angle * 3.0, t * 0.5, 0.0)) * 0.04;
-        // Listening: rhythmic breathing pulse
-        float listenW = clamp(st - 2.0, 0.0, 1.0);
-        radiusMod += listenW * sin(t * 1.5) * 0.045;
+        // --- State weights ---
+        float wIdle   = 1.0 - clamp(st, 0.0, 1.0);
+        float wThink  = clamp(st, 0.0, 1.0) * (1.0 - clamp(st - 1.0, 0.0, 1.0));
+        float wTalk   = clamp(st - 1.0, 0.0, 1.0) * (1.0 - clamp(st - 2.0, 0.0, 1.0));
+        float wListen = clamp(st - 2.0, 0.0, 1.0);
 
-        // Organic orb shape
-        float shapeN = snoise(float3(uv * 1.5, t * 0.05)) * 0.10;
-        shapeN += snoise(float3(uv * 0.8 + 15.0, t * 0.035)) * 0.05;
+        // --- State-driven radius modulation ---
+        float radiusMod = 0.0;
+        radiusMod += wThink * sin(t * 2.5) * 0.04;
+        radiusMod += wThink * sin(t * 3.8 + 1.3) * 0.025;
+        radiusMod += wTalk * sin(t * 4.5) * 0.035;
+        radiusMod += wTalk * snoise(float3(angle * 3.0, t * 0.5, 0.0)) * 0.045;
+        radiusMod += wListen * sin(t * 1.5) * 0.045;
+        // Notification pulse: quick expansion
+        radiusMod += notif * sin(u.time * 8.0) * 0.04;
+
+        // --- Organic orb shape (two octaves for more life) ---
+        float shapeN = snoise(float3(uv * 1.8, t * 0.06)) * 0.12;
+        shapeN += snoise(float3(uv * 0.7 + 15.0, t * 0.035)) * 0.07;
+        shapeN += snoise(float3(uv * 3.5 + 30.0, t * 0.08)) * 0.04; // fine detail
         float dd = dist + shapeN;
-        float orbR = 0.52 + sin(t * 0.25) * 0.012 + radiusMod;
+
+        // Breathing: visible in idle, subtle otherwise
+        float breathe = sin(u.time * 0.15) * 0.03 * wIdle
+                       + sin(u.time * 0.3) * 0.015 * (1.0 - wIdle);
+        float orbR = 0.50 + breathe + radiusMod;
         float nd = dd / orbR;
 
-        float mask = 1.0 - smoothstep(0.3, 1.08, nd);
+        // Soft feathered edge (multi-layer falloff, not a hard line)
+        float maskInner = 1.0 - smoothstep(0.2, 0.85, nd);
+        float maskOuter = 1.0 - smoothstep(0.7, 1.15, nd);
+        float mask = maskInner * 0.7 + maskOuter * 0.3;
 
-        // --- State-blended color palettes ---
-        // Idle weights (state 0)
-        float wIdle   = 1.0 - clamp(st, 0.0, 1.0);
-        // Thinking weights (state 1)
-        float wThink  = thinkW;
-        // Talking weights (state 2)
-        float wTalk   = talkW;
-        // Listening weights (state 3)
-        float wListen = listenW;
-
-        // Per-state primary/secondary/accent colors
-        // Idle: cool blue/teal, calm
+        // --- Color palettes ---
         float3 iC1 = float3(0.18, 0.50, 0.98);
         float3 iC2 = float3(0.00, 0.79, 0.65);
         float3 iC3 = float3(0.30, 0.20, 0.70);
@@ -259,7 +272,6 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float3 iC5 = float3(0.15, 0.75, 0.55);
         float3 iC6 = float3(0.10, 0.85, 0.90);
 
-        // Thinking: deep violet/magenta, intense
         float3 tC1 = float3(0.70, 0.10, 0.95);
         float3 tC2 = float3(0.90, 0.15, 0.70);
         float3 tC3 = float3(0.50, 0.05, 1.00);
@@ -267,7 +279,6 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float3 tC5 = float3(0.40, 0.00, 0.80);
         float3 tC6 = float3(0.95, 0.10, 0.60);
 
-        // Talking: hot orange/pink/gold, energetic
         float3 kC1 = float3(1.00, 0.40, 0.05);
         float3 kC2 = float3(1.00, 0.15, 0.45);
         float3 kC3 = float3(1.00, 0.70, 0.00);
@@ -275,7 +286,6 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float3 kC5 = float3(1.00, 0.55, 0.10);
         float3 kC6 = float3(0.95, 0.30, 0.50);
 
-        // Listening: vivid green/cyan, alert
         float3 lC1 = float3(0.00, 1.00, 0.55);
         float3 lC2 = float3(0.00, 0.85, 0.95);
         float3 lC3 = float3(0.10, 1.00, 0.35);
@@ -283,43 +293,43 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float3 lC5 = float3(0.20, 1.00, 0.45);
         float3 lC6 = float3(0.00, 0.80, 1.00);
 
-        // Blend colors by state weights
-        float3 c1 = iC1 * wIdle + tC1 * wThink + kC1 * wTalk + lC1 * wListen;
-        float3 c2 = iC2 * wIdle + tC2 * wThink + kC2 * wTalk + lC2 * wListen;
-        float3 c3 = iC3 * wIdle + tC3 * wThink + kC3 * wTalk + lC3 * wListen;
-        float3 c4 = iC4 * wIdle + tC4 * wThink + kC4 * wTalk + lC4 * wListen;
-        float3 c5 = iC5 * wIdle + tC5 * wThink + kC5 * wTalk + lC5 * wListen;
-        float3 c6 = iC6 * wIdle + tC6 * wThink + kC6 * wTalk + lC6 * wListen;
+        float3 c1 = iC1*wIdle + tC1*wThink + kC1*wTalk + lC1*wListen;
+        float3 c2 = iC2*wIdle + tC2*wThink + kC2*wTalk + lC2*wListen;
+        float3 c3 = iC3*wIdle + tC3*wThink + kC3*wTalk + lC3*wListen;
+        float3 c4 = iC4*wIdle + tC4*wThink + kC4*wTalk + lC4*wListen;
+        float3 c5 = iC5*wIdle + tC5*wThink + kC5*wTalk + lC5*wListen;
+        float3 c6 = iC6*wIdle + tC6*wThink + kC6*wTalk + lC6*wListen;
 
-        // Glow color blend
-        float3 glowA = mix(iC1, tC1, wThink);
-        glowA = mix(glowA, kC1, wTalk);
+        float3 glowA = mix(mix(iC1, tC1, wThink), kC1, wTalk);
         glowA = mix(glowA, lC1, wListen);
-        float3 glowB = mix(iC2, tC2, wThink);
-        glowB = mix(glowB, kC2, wTalk);
+        float3 glowB = mix(mix(iC2, tC2, wThink), kC2, wTalk);
         glowB = mix(glowB, lC2, wListen);
 
-        // Outer glow for pixels outside the orb
+        // --- Outer glow (outside orb) ---
         if (mask < 0.001) {
-            float g = exp(-dist * 2.8) * 0.12;
-            float g2 = exp(-dist * 5.0) * 0.08;
+            float g1 = exp(-dist * 2.5) * 0.14;
+            float g2 = exp(-dist * 4.5) * 0.08;
             float a = snoise(float3(angle, dist * 2.0, t * 0.03));
             float3 gc = mix(glowA, glowB, a * 0.5 + 0.5);
-            // Drop highlight: brighten outer glow
             gc += float3(0.3, 0.7, 1.0) * u.dropHighlight * exp(-dist * 3.0) * 0.15;
-            float totalG = g + g2;
-            float ga = totalG * 0.5 + u.dropHighlight * exp(-dist * 3.0) * 0.08;
-            return float4(gc * totalG + gc * u.dropHighlight * 0.05, ga);
+            // Notification: bright ring pulse
+            gc += mix(c1, float3(1.0), 0.5) * notif * exp(-dist * 4.0) * 0.2
+                * (0.5 + 0.5 * sin(u.time * 6.0));
+            float totalG = g1 + g2;
+            // Presence dimming on outer glow
+            float presBright = mix(0.1, 1.0, pres);
+            float ga = totalG * 0.5 * presBright;
+            return float4(gc * totalG * presBright, ga);
         }
 
-        // Warped y-axis for curtain folds
+        // --- Aurora curtain folds ---
         float yw = uv.y;
-        float foldSpeed = mix(1.0, 1.6, wTalk); // faster folds when talking
-        yw += snoise(float3(uv.x * 2.5, t * 0.09 * foldSpeed, 0.0)) * 0.18;
-        yw += snoise(float3(uv.x * 4.0 + 20.0, t * 0.07 * foldSpeed, 5.0)) * 0.10;
-        yw += snoise(float3(uv.x * 1.2 + 40.0, t * 0.04 * foldSpeed, 10.0)) * 0.12;
+        float foldSpeed = mix(1.0, 1.6, wTalk);
+        yw += snoise(float3(uv.x * 2.5, t * 0.09 * foldSpeed, 0.0)) * 0.20;
+        yw += snoise(float3(uv.x * 4.0 + 20.0, t * 0.07 * foldSpeed, 5.0)) * 0.12;
+        yw += snoise(float3(uv.x * 1.2 + 40.0, t * 0.04 * foldSpeed, 10.0)) * 0.14;
 
-        // Color bands with Gaussian falloff
+        // Color bands
         float b1 = exp(-pow((yw - 0.15) * 4.5, 2.0));
         float b2 = exp(-pow((yw + 0.05) * 3.8, 2.0));
         float b3 = exp(-pow((yw - 0.30) * 5.5, 2.0));
@@ -327,7 +337,6 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
         float b5 = exp(-pow((yw + 0.35) * 5.0, 2.0));
         float b6 = exp(-pow((yw - 0.02) * 6.0, 2.0));
 
-        // Time-varying color shifts
         float shift = t * 0.02;
         float3 col = c1 * b1 * (1.0 + sin(shift) * 0.3)
                    + c2 * b2 * (1.0 + sin(shift + 1.5) * 0.3)
@@ -336,47 +345,58 @@ class OrbMetalRenderer: NSObject, MTKViewDelegate {
                    + c5 * b5 * (1.0 + sin(shift + 2.0) * 0.25)
                    + c6 * b6 * (1.0 + sin(shift + 5.5) * 0.2);
 
-        // State-based intensity modulation
+        // Intensity per state
         float intensity = 1.0;
-        intensity = mix(intensity, 0.75, wIdle);    // idle: calm, subdued
-        intensity = mix(intensity, 1.4, wTalk);     // talking: bright, energetic
-        intensity = mix(intensity, 1.2, wThink);    // thinking: vivid
-        intensity = mix(intensity, 1.1, wListen);   // listening: alert
+        intensity = mix(intensity, 0.8, wIdle);
+        intensity = mix(intensity, 1.4, wTalk);
+        intensity = mix(intensity, 1.2, wThink);
+        intensity = mix(intensity, 1.1, wListen);
         col *= intensity;
 
         // Shimmer
         float shimmer = snoise(float3(uv * 4.0, t * 0.1)) * 0.12 + 0.88;
         col *= shimmer;
 
-        // Core glow — state-tinted, richer
-        float coreStr = 0.45 + wTalk * 0.2;
-        float core = exp(-nd * nd * 2.5) * coreStr;
+        // Core glow
+        float coreStr = 0.5 + wTalk * 0.2 + notif * 0.3;
+        float core = exp(-nd * nd * 2.2) * coreStr;
         col += mix(c1, float3(1.0), 0.6) * core;
 
-        // Secondary inner glow for depth
-        float innerGlow = exp(-nd * nd * 5.0) * 0.15;
+        // Inner luminance for depth
+        float innerGlow = exp(-nd * nd * 5.0) * 0.18;
         col += float3(1.0) * innerGlow;
 
         // Base fill
-        float fill = 0.07 * (1.0 - nd * 0.5);
+        float fill = 0.08 * (1.0 - nd * 0.5);
         col += mix(c3, c1, nd) * fill;
 
-        // Edge bloom
-        float eb = smoothstep(0.6, 0.95, nd) * smoothstep(1.1, 0.85, nd);
+        // Edge bloom (soft colored rim)
+        float eb = smoothstep(0.55, 0.9, nd) * smoothstep(1.15, 0.85, nd);
         float3 ebCol = mix(c2, c4, sin(angle + t * 0.1) * 0.5 + 0.5);
-        col += ebCol * eb * 0.25;
+        col += ebCol * eb * 0.3;
 
-        // Drop highlight: additive white/blue tint
+        // Drop highlight
         col += float3(0.25, 0.5, 0.8) * u.dropHighlight * 0.3 * (1.0 - nd * 0.6);
 
-        float alpha = mask * max(0.25, length(col) * 0.8);
+        // Notification: additive flash on entire orb
+        col += mix(c1, float3(1.0, 0.9, 0.8), 0.6) * notif * 0.25
+             * (0.5 + 0.5 * sin(u.time * 6.0));
+
+        // --- Presence dimming (the whole point) ---
+        float presBright = mix(0.15, 1.0, pres);
+        col *= presBright;
+
+        float alpha = mask * max(0.3, length(col) * 0.85);
         alpha = clamp(alpha, 0.0, 1.0);
 
-        // Outer glow — more diffused, richer
-        float glow = exp(-dist * 2.5) * 0.10;
+        // Outer glow contribution
+        float glow = exp(-dist * 2.2) * 0.12;
         float glowTight = exp(-dist * 5.0) * 0.06;
-        col += mix(glowA, glowB, 0.5) * (glow + glowTight);
-        alpha = clamp(alpha + (glow + glowTight) * 0.5, 0.0, 1.0);
+        col += mix(glowA, glowB, 0.5) * (glow + glowTight) * presBright;
+        alpha = clamp(alpha + (glow + glowTight) * 0.5 * presBright, 0.0, 1.0);
+
+        // Final presence alpha fade
+        alpha *= mix(0.3, 1.0, pres);
 
         return clamp(float4(col * alpha, alpha), 0.0, 1.0);
     }

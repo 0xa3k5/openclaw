@@ -131,8 +131,11 @@ final class OrbWindowController {
         dropView.addSubview(hostView)
         panel.contentView = dropView
 
-        // Position top-right of main screen
-        if let screen = NSScreen.main {
+        // Restore saved position or default to top-right
+        if let savedX = UserDefaults.standard.object(forKey: "orbPositionX") as? CGFloat,
+           let savedY = UserDefaults.standard.object(forKey: "orbPositionY") as? CGFloat {
+            panel.setFrameOrigin(NSPoint(x: savedX, y: savedY))
+        } else if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.maxX - self.orbSize - 40
             let y = screenFrame.maxY - self.orbSize - 40
@@ -149,6 +152,11 @@ final class OrbWindowController {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // Persist position
+                if let frame = self.panel?.frame {
+                    UserDefaults.standard.set(frame.origin.x, forKey: "orbPositionX")
+                    UserDefaults.standard.set(frame.origin.y, forKey: "orbPositionY")
+                }
                 WebChatManager.shared.repositionPanel {
                     self.panelFrame
                 }
@@ -198,6 +206,9 @@ private struct OrbHostView: View {
     private let activityStore = WorkActivityStore.shared
     private let dropState = OrbDropState.shared
     @State private var isHovering = false
+    @State private var presenceValue: Float = 1.0
+    @State private var isScreenAsleep = false
+    @State private var presenceTimer: Timer?
     let orbSize: CGFloat
 
     var body: some View {
@@ -205,10 +216,12 @@ private struct OrbHostView: View {
             speed: self.orbSpeed,
             state: self.orbState,
             hoverBoost: self.isHovering ? 1.5 : 1.0,
-            dropHighlight: self.dropState.isDragHovering ? 1.0 : 0.0
+            dropHighlight: self.dropState.isDragHovering ? 1.0 : 0.0,
+            presence: self.presenceValue,
+            notification: 0  // TODO: wire gateway notification events
         )
         .frame(width: self.orbSize, height: self.orbSize)
-        .scaleEffect(self.isHovering ? 1.15 : 1.0)
+        .scaleEffect(self.isHovering ? 1.08 : 1.0)
         .animation(.easeInOut(duration: 0.3), value: self.isHovering)
         .contentShape(Circle())
         .onTapGesture {
@@ -217,7 +230,56 @@ private struct OrbHostView: View {
         .onHover { hovering in
             self.isHovering = hovering
         }
+        .onAppear {
+            self.startPresencePolling()
+            self.observeScreenSleep()
+        }
+        .onDisappear {
+            self.presenceTimer?.invalidate()
+        }
     }
+
+    // MARK: - Presence
+
+    private func startPresencePolling() {
+        self.presenceTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                self.updatePresence()
+            }
+        }
+    }
+
+    private func updatePresence() {
+        if self.isScreenAsleep {
+            self.presenceValue = 0.1
+            return
+        }
+        guard let seconds = PresenceReporter.idleSeconds() else {
+            self.presenceValue = 0.7
+            return
+        }
+        if seconds < 30 {
+            self.presenceValue = 1.0
+        } else if seconds < 120 {
+            self.presenceValue = 0.7
+        } else if seconds < 300 {
+            self.presenceValue = 0.4
+        } else {
+            self.presenceValue = 0.2
+        }
+    }
+
+    private func observeScreenSleep() {
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { self.isScreenAsleep = true }
+        }
+        ws.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { self.isScreenAsleep = false }
+        }
+    }
+
+    // MARK: - State Mapping
 
     private var orbSpeed: Float {
         switch self.activityStore.iconState {
@@ -225,8 +287,18 @@ private struct OrbHostView: View {
             return 0.15
         case .workingMain(.job):
             return 0.6
-        case .workingMain(.tool):
-            return 0.8
+        case .workingMain(.tool(.bash)):
+            return 0.7         // executing
+        case .workingMain(.tool(.read)):
+            return 0.4         // reading
+        case .workingMain(.tool(.write)):
+            return 0.6         // writing
+        case .workingMain(.tool(.edit)):
+            return 0.5         // editing
+        case .workingMain(.tool(.attach)):
+            return 0.45
+        case .workingMain(.tool(.other)):
+            return 0.6
         case .workingOther:
             return 0.4
         case .overridden:
@@ -237,15 +309,25 @@ private struct OrbHostView: View {
     private var orbState: Float {
         switch self.activityStore.iconState {
         case .idle:
-            return 0        // idle
+            return 0           // calm blue/teal
         case .workingMain(.job):
-            return 1        // thinking
-        case .workingMain(.tool):
-            return 2        // talking
+            return 1.0         // thinking: violet/magenta
+        case .workingMain(.tool(.bash)):
+            return 2.0         // executing: hot orange
+        case .workingMain(.tool(.read)):
+            return 1.5         // reading: violet-orange blend
+        case .workingMain(.tool(.write)):
+            return 2.5         // writing: orange-green blend
+        case .workingMain(.tool(.edit)):
+            return 2.5         // editing: orange-green blend
+        case .workingMain(.tool(.attach)):
+            return 1.8         // attaching: transitional
+        case .workingMain(.tool(.other)):
+            return 2.0         // other tools: orange
         case .workingOther:
-            return 1        // thinking
+            return 1.0         // background work: thinking
         case .overridden:
-            return 2        // talking
+            return 2.0
         }
     }
 
