@@ -372,16 +372,16 @@ final class ControlChannel {
     }
 
     private func routeWorkActivity(from event: ControlAgentEvent) {
-        // We currently treat VoiceWake as the "main" session for UI purposes.
-        // In the future, the gateway can include a sessionKey to distinguish runs.
         let sessionKey = (event.data["sessionKey"]?.value as? String) ?? "main"
 
         switch event.stream.lowercased() {
-        case "job":
-            if let state = event.data["state"]?.value as? String {
-                WorkActivityStore.shared.handleJob(sessionKey: sessionKey, state: state)
-            }
+        case "lifecycle":
+            // Gateway emits: stream="lifecycle", data.phase="start"/"end"
+            let phase = event.data["phase"]?.value as? String ?? ""
+            let state = phase == "start" ? "started" : "done"
+            WorkActivityStore.shared.handleJob(sessionKey: sessionKey, state: state)
         case "tool":
+            // Gateway emits: stream="tool", data.phase="start"/"update"/"end", data.name="exec"/etc.
             let phase = event.data["phase"]?.value as? String ?? ""
             let name = event.data["name"]?.value as? String
             let meta = event.data["meta"]?.value as? String

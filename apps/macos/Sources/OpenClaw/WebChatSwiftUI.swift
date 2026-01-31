@@ -14,6 +14,7 @@ private enum WebChatSwiftUILayout {
     static let panelSize = NSSize(width: 480, height: 640)
     static let windowMinSize = NSSize(width: 480, height: 360)
     static let anchorPadding: CGFloat = 8
+    static let orbGap: CGFloat = -8
 }
 
 struct MacGatewayChatTransport: OpenClawChatTransport, Sendable {
@@ -145,6 +146,7 @@ final class WebChatSwiftUIWindowController {
     private let contentController: NSViewController
     private var window: NSWindow?
     private var dismissMonitor: Any?
+    let viewModel: OpenClawChatViewModel
     var onClosed: (() -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
 
@@ -156,6 +158,7 @@ final class WebChatSwiftUIWindowController {
         self.sessionKey = sessionKey
         self.presentation = presentation
         let vm = OpenClawChatViewModel(sessionKey: sessionKey, transport: transport)
+        self.viewModel = vm
         let accent = Self.color(fromHex: AppStateStore.shared.seamColorHex)
         self.hosting = NSHostingController(rootView: OpenClawChatView(
             viewModel: vm,
@@ -211,6 +214,11 @@ final class WebChatSwiftUIWindowController {
         self.removeDismissMonitor()
     }
 
+    func repositionIfVisible(anchorProvider: () -> NSRect?) {
+        guard case .panel = self.presentation, let window, window.isVisible else { return }
+        self.reposition(using: anchorProvider)
+    }
+
     @discardableResult
     private func reposition(using anchorProvider: () -> NSRect?) -> NSRect {
         guard let window else { return .zero }
@@ -230,7 +238,7 @@ final class WebChatSwiftUIWindowController {
         let frame = WindowPlacement.anchoredBelowFrame(
             size: WebChatSwiftUILayout.panelSize,
             anchor: anchor,
-            padding: WebChatSwiftUILayout.anchorPadding,
+            padding: WebChatSwiftUILayout.orbGap,
             in: bounds)
         window.setFrame(frame, display: false)
         return frame

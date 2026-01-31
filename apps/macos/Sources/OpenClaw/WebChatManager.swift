@@ -84,6 +84,27 @@ final class WebChatManager {
         controller.presentAnchored(anchorProvider: anchorProvider)
     }
 
+    var isPanelVisible: Bool {
+        self.panelController?.isVisible ?? false
+    }
+
+    func showPanel(sessionKey: String, anchorProvider: @escaping () -> NSRect?) {
+        if let controller = self.panelController, self.panelSessionKey == sessionKey, controller.isVisible {
+            return // already showing
+        }
+        self.togglePanel(sessionKey: sessionKey, anchorProvider: anchorProvider)
+    }
+
+    func repositionPanel(anchorProvider: @escaping () -> NSRect?) {
+        self.panelController?.repositionIfVisible(anchorProvider: anchorProvider)
+    }
+
+    /// Add file attachments to the active chat composer (panel or window).
+    func addAttachments(urls: [URL]) {
+        let controller = self.panelController ?? self.windowController
+        controller?.viewModel.addAttachments(urls: urls)
+    }
+
     func closePanel() {
         self.panelController?.close()
     }
