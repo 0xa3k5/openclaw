@@ -15,6 +15,7 @@ struct NotificationManager {
     }()
 
     func send(title: String, body: String, sound: String?, priority: NotificationPriority? = nil) async -> Bool {
+        guard Bundle.main.bundleIdentifier != nil else { return false }
         let center = UNUserNotificationCenter.current()
         let status = await center.notificationSettings()
         if status.authorizationStatus == .notDetermined {
