@@ -218,14 +218,14 @@ private struct OrbHostView: View {
         MetalOrbView(
             speed: self.nudgeStore.hasNudge ? max(self.orbSpeed, 0.5) : self.orbSpeed,
             state: self.orbState,
-            hoverBoost: self.isHovering ? 1.5 : 1.0,
+            hoverBoost: self.isHovering ? 1.2 : 1.0,
             dropHighlight: self.dropState.isDragHovering ? 1.0 : 0.0,
             presence: self.nudgeStore.hasNudge ? 1.0 : self.presenceValue,
             notification: self.notificationValue
         )
         .frame(width: self.orbSize, height: self.orbSize)
         .scaleEffect(self.nudgeScale)
-        .animation(.easeInOut(duration: 0.3), value: self.isHovering)
+        .animation(.easeInOut(duration: 0.5), value: self.isHovering)
         .animation(.spring(response: 0.5, dampingFraction: 0.6), value: self.nudgeBounce)
         .contentShape(Circle())
         .onTapGesture {

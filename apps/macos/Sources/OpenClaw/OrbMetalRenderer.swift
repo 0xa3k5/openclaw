@@ -28,7 +28,7 @@ struct OrbAnimParams: Sendable {
         let activeFactor = t.speed > speed ? min(f * 1.8, 0.2) : f
         speed         += (t.speed - speed) * activeFactor
         state         += (t.state - state) * activeFactor
-        hoverBoost    += (t.hoverBoost - hoverBoost) * f
+        hoverBoost    += (t.hoverBoost - hoverBoost) * (f * 0.4)  // slow ease for hover
         dropHighlight += (t.dropHighlight - dropHighlight) * f
         presence      += (t.presence - presence) * (f * 0.5)  // slow fade for presence
         notification  += (t.notification - notification) * (f * 2.0)  // fast for notifications
