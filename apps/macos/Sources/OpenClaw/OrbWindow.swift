@@ -201,7 +201,7 @@ final class OrbWindowController {
     }
 }
 
-/// SwiftUI host that observes WorkActivityStore and maps IconState to orb speed + state.
+/// SwiftUI host that observes WorkActivityStore and maps IconState to face speed + state.
 private struct OrbHostView: View {
     private let activityStore = WorkActivityStore.shared
     private let dropState = OrbDropState.shared
@@ -212,66 +212,110 @@ private struct OrbHostView: View {
     @State private var isScreenAsleep = false
     @State private var presenceTimer: Timer?
     @State private var nudgeDecayTask: Task<Void, Never>?
+    @State private var faceKind: FaceKind = FaceKind.current
     let orbSize: CGFloat
 
+    // Common animation parameters
+    private var faceSpeed: Float {
+        self.nudgeStore.hasNudge ? max(self.orbSpeed, 0.5) : self.orbSpeed
+    }
+
+    private var faceState: Float { self.orbState }
+    private var faceHoverBoost: Float { self.isHovering ? 1.2 : 1.0 }
+    private var faceDropHighlight: Float { self.dropState.isDragHovering ? 1.0 : 0.0 }
+    private var facePresence: Float { self.nudgeStore.hasNudge ? 1.0 : self.presenceValue }
+    private var faceNotification: Float { self.notificationValue }
+
     var body: some View {
-        MetalOrbView(
-            speed: self.nudgeStore.hasNudge ? max(self.orbSpeed, 0.5) : self.orbSpeed,
-            state: self.orbState,
-            hoverBoost: self.isHovering ? 1.2 : 1.0,
-            dropHighlight: self.dropState.isDragHovering ? 1.0 : 0.0,
-            presence: self.nudgeStore.hasNudge ? 1.0 : self.presenceValue,
-            notification: self.notificationValue
-        )
-        .frame(width: self.orbSize, height: self.orbSize)
-        .scaleEffect(self.nudgeScale)
-        .animation(.easeInOut(duration: 0.5), value: self.isHovering)
-        .animation(.spring(response: 0.5, dampingFraction: 0.6), value: self.nudgeBounce)
-        .contentShape(Circle())
-        .onTapGesture {
-            self.nudgeStore.acknowledge()
-            self.notificationValue = 0
-            self.nudgeBounce = false
-            self.toggleChat()
-        }
-        .onHover { hovering in
-            self.isHovering = hovering
-        }
-        .onAppear {
-            self.startPresencePolling()
-            self.observeScreenSleep()
-        }
-        .onDisappear {
-            self.presenceTimer?.invalidate()
-            self.nudgeDecayTask?.cancel()
-        }
-        .onChange(of: self.nudgeStore.hasNudge) { _, hasNudge in
-            if hasNudge {
-                self.notificationValue = 1.0
-                // Bounce: quick scale pop to grab attention
-                self.nudgeBounce = true
-                // Settle the notification intensity but keep it visible
-                self.nudgeDecayTask?.cancel()
-                self.nudgeDecayTask = Task {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    await MainActor.run {
-                        withAnimation(.easeOut(duration: 2.0)) {
-                            self.notificationValue = 0.4
+        self.activeFace
+            .frame(width: self.orbSize, height: self.orbSize)
+            .contentShape(Circle())
+            .onTapGesture {
+                self.nudgeStore.acknowledge()
+                self.notificationValue = 0
+                self.nudgeBounce = false
+                self.toggleChat()
+            }
+            .contextMenu {
+                ForEach(FaceKind.allCases) { kind in
+                    Button {
+                        self.faceKind = kind
+                        FaceKind.current = kind
+                    } label: {
+                        HStack {
+                            Text(kind.displayName)
+                            if kind == self.faceKind {
+                                Image(systemName: "checkmark")
+                            }
                         }
                     }
                 }
-            } else {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    self.notificationValue = 0
-                }
-                self.nudgeBounce = false
             }
+            .onHover { hovering in
+                self.isHovering = hovering
+            }
+            .onAppear {
+                self.startPresencePolling()
+                self.observeScreenSleep()
+            }
+            .onDisappear {
+                self.presenceTimer?.invalidate()
+                self.nudgeDecayTask?.cancel()
+            }
+            .onChange(of: self.nudgeStore.hasNudge) { _, hasNudge in
+                if hasNudge {
+                    self.notificationValue = 1.0
+                    self.nudgeBounce = true
+                    self.nudgeDecayTask?.cancel()
+                    self.nudgeDecayTask = Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        await MainActor.run {
+                            withAnimation(.easeOut(duration: 2.0)) {
+                                self.notificationValue = 0.4
+                            }
+                        }
+                    }
+                } else {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        self.notificationValue = 0
+                    }
+                    self.nudgeBounce = false
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var activeFace: some View {
+        switch self.faceKind {
+        case .orb:
+            MetalOrbView(
+                speed: self.faceSpeed,
+                state: self.faceState,
+                hoverBoost: self.faceHoverBoost,
+                dropHighlight: self.faceDropHighlight,
+                presence: self.facePresence,
+                notification: self.faceNotification
+            )
+            .scaleEffect(self.orbNudgeScale)
+            .animation(.easeInOut(duration: 0.5), value: self.isHovering)
+            .animation(.spring(response: 0.5, dampingFraction: 0.6), value: self.nudgeBounce)
+
+        case .lobster:
+            LobsterFaceView(
+                speed: self.faceSpeed,
+                state: self.faceState,
+                hoverBoost: self.faceHoverBoost,
+                dropHighlight: self.faceDropHighlight,
+                presence: self.facePresence,
+                notification: self.faceNotification
+            )
         }
     }
 
     @State private var nudgeBounce = false
 
-    private var nudgeScale: CGFloat {
+    /// Scale effect only applies to the orb face.
+    private var orbNudgeScale: CGFloat {
         if self.nudgeBounce {
             return 1.12
         } else if self.isHovering {
